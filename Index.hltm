@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Block Game+</title>
+<style>
+body { margin:0; overflow:hidden; font-family:sans-serif; }
+
+#ui {
+  position: fixed;
+  bottom: 20px;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+}
+
+button {
+  padding: 14px;
+  margin: 4px;
+  font-size: 16px;
+  border-radius: 10px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="ui">
+  <div>
+    <button id="up">↑</button><br>
+    <button id="left">←</button>
+    <button id="down">↓</button>
+    <button id="right">→</button>
+  </div>
+
+  <div>
+    <button id="jump">Jump</button><br>
+    <button id="place">Place</button>
+    <button id="break">Break</button><br>
+    <button id="block">Block: Grass</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// Lighting
+const light = new THREE.DirectionalLight(0xffffff,1);
+light.position.set(10,20,10);
+scene.add(light);
+
+// Materials
+const grassTop = new THREE.MeshLambertMaterial({color:0x33aa33});
+const dirt = new THREE.MeshLambertMaterial({color:0x8B4513});
+const stone = new THREE.MeshLambertMaterial({color:0x888888});
+
+let currentBlock = "grass";
+
+// Geometry
+const geo = new THREE.BoxGeometry();
+
+// Player physics
+let velocityY = 0;
+let onGround = false;
+camera.position.set(0,3,0);
+
+// Movement
+let move = {f:0, s:0};
+
+// World storage
+let blocks = [];
+let generatedChunks = new Set();
+
+// Create block
+function createBlock(x,y,z,type="grass"){
+  let mat = type==="stone"?stone:(type==="dirt"?dirt:grassTop);
+  let cube = new THREE.Mesh(geo, mat);
+  cube.position.set(x,y,z);
+  cube.userData.type = type;
+  scene.add(cube);
+  blocks.push(cube);
+}
+
+// Generate chunk
+function generateChunk(cx, cz){
+  let key = cx+","+cz;
+  if (generatedChunks.has(key)) return;
+  generatedChunks.add(key);
+
+  for (let x=0;x<10;x++){
+    for (let z=0;z<10;z++){
+      let wx = cx*10 + x;
+      let wz = cz*10 + z;
+
+      let h = Math.floor(Math.sin(wx*0.2)*2 + Math.cos(wz*0.2)*2);
+
+      for (let y=0;y<=h;y++){
+        let type = (y===h)?"grass":"dirt";
+        if (y < h-2) type = "stone";
+        createBlock(wx,y,wz,type);
+      }
+    }
+  }
+}
+
+// Load chunks around player
+function updateChunks(){
+  let cx = Math.floor(camera.position.x/10);
+  let cz = Math.floor(camera.position.z/10);
+
+  for (let x=-1;x<=1;x++){
+    for (let z=-1;z<=1;z++){
+      generateChunk(cx+x, cz+z);
+    }
+  }
+}
+
+// Raycast
+const raycaster = new THREE.Raycaster();
+
+function interact(place){
+  raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+  let hit = raycaster.intersectObjects(blocks)[0];
+  if (!hit) return;
+
+  if (place){
+    createBlock(
+      hit.object.position.x + hit.face.normal.x,
+      hit.object.position.y + hit.face.normal.y,
+      hit.object.position.z + hit.face.normal.z,
+      currentBlock
+    );
+  } else {
+    scene.remove(hit.object);
+    blocks = blocks.filter(b=>b!==hit.object);
+  }
+}
+
+// Physics
+function physics(){
+  velocityY -= 0.01;
+  camera.position.y += velocityY;
+
+  if (camera.position.y < 2){
+    camera.position.y = 2;
+    velocityY = 0;
+    onGround = true;
+  }
+}
+
+// Movement
+function movement(){
+  camera.position.x += move.s * 0.1;
+  camera.position.z += move.f * 0.1;
+}
+
+// Touch hold buttons
+function hold(btn, start, end){
+  btn.ontouchstart = start;
+  btn.ontouchend = end;
+}
+
+hold(up, ()=>move.f=-1, ()=>move.f=0);
+hold(down, ()=>move.f=1, ()=>move.f=0);
+hold(left, ()=>move.s=-1, ()=>move.s=0);
+hold(right, ()=>move.s=1, ()=>move.s=0);
+
+// Actions
+jump.onclick = ()=>{
+  if (onGround){
+    velocityY = 0.2;
+    onGround = false;
+  }
+};
+
+place.onclick = ()=>interact(true);
+break.onclick = ()=>interact(false);
+
+// Inventory toggle
+block.onclick = ()=>{
+  if (currentBlock==="grass") currentBlock="dirt";
+  else if (currentBlock==="dirt") currentBlock="stone";
+  else currentBlock="grass";
+
+  block.innerText = "Block: " + currentBlock;
+};
+
+// Controller
+function controller(){
+  let gp = navigator.getGamepads()[0];
+  if (!gp) return;
+
+  document.getElementById("ui").style.display="none";
+
+  move.f = gp.axes[1];
+  move.s = gp.axes[0];
+
+  if (gp.buttons[0].pressed && onGround){
+    velocityY = 0.2;
+  }
+  if (gp.buttons[1].pressed) interact(false);
+  if (gp.buttons[2].pressed) interact(true);
+}
+
+// Loop
+function loop(){
+  requestAnimationFrame(loop);
+  movement();
+  physics();
+  updateChunks();
+  controller();
+  renderer.render(scene,camera);
+}
+
+loop();
+</script>
+
+</body>
+</html>
