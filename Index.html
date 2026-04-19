@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Minecraft Ultra Browser</title>
+<style>
+body { margin:0; overflow:hidden; font-family:sans-serif; }
+
+/* Crosshair */
+#crosshair {
+  position:fixed;
+  top:50%; left:50%;
+  width:8px; height:8px;
+  background:black;
+  transform:translate(-50%,-50%);
+}
+
+/* Hotbar */
+#hotbar {
+  position:fixed;
+  bottom:10px;
+  width:100%;
+  text-align:center;
+}
+.slot {
+  display:inline-block;
+  width:50px;height:50px;
+  border:2px solid white;
+  margin:4px;
+  color:white;
+  line-height:50px;
+}
+.selected { border-color:yellow; }
+
+/* Controls */
+#ui {
+  position:fixed;
+  bottom:80px;
+  width:100%;
+  display:flex;
+  justify-content:space-between;
+}
+button {
+  padding:12px;
+  margin:3px;
+  border-radius:8px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="crosshair"></div>
+<div id="hotbar"></div>
+
+<div id="ui">
+  <div>
+    <button id="up">↑</button><br>
+    <button id="left">←</button>
+    <button id="down">↓</button>
+    <button id="right">→</button>
+  </div>
+  <div>
+    <button id="jump">Jump</button><br>
+    <button id="place">Place</button>
+    <button id="break">Break</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+// ===== SCENE =====
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,1000);
+const renderer = new THREE.WebGLRenderer();
+renderer.setSize(innerWidth,innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// ===== LIGHT =====
+let time=0;
+const light = new THREE.DirectionalLight(0xffffff,1);
+light.position.set(10,20,10);
+scene.add(light);
+
+// ===== MATERIALS =====
+const mats = {
+  grass:new THREE.MeshLambertMaterial({color:0x33aa33}),
+  dirt:new THREE.MeshLambertMaterial({color:0x8B4513}),
+  stone:new THREE.MeshLambertMaterial({color:0x888888}),
+  wood:new THREE.MeshLambertMaterial({color:0x8B5A2B}),
+  leaves:new THREE.MeshLambertMaterial({color:0x228B22}),
+  portal:new THREE.MeshLambertMaterial({color:0x9900ff})
+};
+
+const geo = new THREE.BoxGeometry();
+
+// ===== PLAYER =====
+camera.position.set(0,3,0);
+let velY=0,onGround=false;
+
+// ===== DIMENSIONS =====
+let currentDimension="overworld";
+
+const dimensions = {
+  overworld:{gravity:0.01,color:"#87CEEB",height:(x,z)=>Math.sin(x*0.2)*2},
+  nether:{gravity:0.012,color:"#550000",height:(x,z)=>Math.sin(x*0.5)*3},
+  end:{gravity:0.009,color:"#000000",height:(x,z)=>Math.random()*3},
+  aether:{gravity:0.008,color:"#aaffff",height:(x,z)=>Math.sin(x*0.1)*4},
+  moon:{gravity:0.003,color:"#888888",height:(x,z)=>Math.cos(z*0.2)*2}
+};
+
+// ===== WORLDS =====
+let worlds={};
+
+function getWorld(name){
+  if(!worlds[name]) worlds[name]={blocks:[],chunks:new Set()};
+  return worlds[name];
+}
+
+function currentWorld(){
+  return getWorld(currentDimension);
+}
+
+// ===== INVENTORY =====
+let hotbar=["grass","dirt","stone","wood"];
+let inventory={grass:0,dirt:0,stone:0,wood:0};
+let selected=0;
+
+function drawHotbar(){
+  let h=document.getElementById("hotbar");
+  h.innerHTML="";
+  hotbar.forEach((b,i)=>{
+    let d=document.createElement("div");
+    d.className="slot"+(i===selected?" selected":"");
+    d.innerText=b[0].toUpperCase()+"("+inventory[b]+")";
+    d.onclick=()=>{selected=i;drawHotbar();};
+    h.appendChild(d);
+  });
+}
+drawHotbar();
+
+// ===== CREATE BLOCK =====
+function createBlock(x,y,z,type){
+  let c=new THREE.Mesh(geo,mats[type]);
+  c.position.set(x,y,z);
+  c.userData.type=type;
+  scene.add(c);
+  currentWorld().blocks.push(c);
+}
+
+// ===== PORTALS =====
+function createPortal(x,y,z,target){
+  let p=new THREE.Mesh(geo,mats.portal);
+  p.position.set(x,y,z);
+  p.userData.portal=true;
+  p.userData.target=target;
+  scene.add(p);
+  currentWorld().blocks.push(p);
+}
+
+// ===== TERRAIN =====
+function genChunk(cx,cz){
+  let world=currentWorld();
+  let key=cx+","+cz;
+  if(world.chunks.has(key)) return;
+  world.chunks.add(key);
+
+  let dim=dimensions[currentDimension];
+
+  for(let x=0;x<10;x++){
+    for(let z=0;z<10;z++){
+      let wx=cx*10+x;
+      let wz=cz*10+z;
+      let h=Math.floor(dim.height(wx,wz));
+
+      for(let y=0;y<=h;y++){
+        createBlock(wx,y,wz,"stone");
+      }
+    }
+  }
+}
+
+function loadChunks(){
+  let cx=Math.floor(camera.position.x/10);
+  let cz=Math.floor(camera.position.z/10);
+  for(let x=-1;x<=1;x++)
+    for(let z=-1;z<=1;z++)
+      genChunk(cx+x,cz+z);
+}
+
+// ===== RAYCAST =====
+const ray=new THREE.Raycaster();
+let breakTime=0;
+
+function interact(place,dt){
+  ray.setFromCamera(new THREE.Vector2(0,0),camera);
+  let hit=ray.intersectObjects(currentWorld().blocks)[0];
+  if(!hit) return;
+
+  if(place){
+    let t=hotbar[selected];
+    if(inventory[t]<=0) return;
+    inventory[t]--;
+    createBlock(
+      hit.object.position.x+hit.face.normal.x,
+      hit.object.position.y+hit.face.normal.y,
+      hit.object.position.z+hit.face.normal.z,
+      t
+    );
+  } else {
+    breakTime+=dt;
+    if(breakTime>0.3){
+      let type=hit.object.userData.type;
+      if(type && inventory[type]!=undefined) inventory[type]++;
+      scene.remove(hit.object);
+      currentWorld().blocks=currentWorld().blocks.filter(b=>b!==hit.object);
+      breakTime=0;
+      drawHotbar();
+    }
+  }
+}
+
+// ===== PORTAL CHECK =====
+function checkPortal(){
+  currentWorld().blocks.forEach(b=>{
+    if(b.userData.portal){
+      let d=camera.position.distanceTo(b.position);
+      if(d<1.5){
+        switchDimension(b.userData.target);
+      }
+    }
+  });
+}
+
+// ===== SWITCH DIMENSION =====
+function switchDimension(name){
+  currentDimension=name;
+
+  scene.children = scene.children.filter(o => o.isLight);
+
+  let world=currentWorld();
+  world.blocks.forEach(b=>scene.add(b));
+
+  document.body.style.background=dimensions[name].color;
+}
+
+// ===== MOBS =====
+let mobs=[];
+
+function spawnMob(){
+  let m=new THREE.Mesh(geo,new THREE.MeshLambertMaterial({
+    color:Math.random()*0xffffff
+  }));
+  m.position.set(camera.position.x+5,2,camera.position.z+5);
+  scene.add(m);
+  mobs.push(m);
+}
+
+function updateMobs(){
+  mobs.forEach(m=>{
+    let dx=camera.position.x-m.position.x;
+    let dz=camera.position.z-m.position.z;
+    let dist=Math.hypot(dx,dz);
+    if(dist<10){
+      m.position.x+=dx*0.01;
+      m.position.z+=dz*0.01;
+    }
+  });
+}
+
+// ===== PHYSICS =====
+function physics(){
+  velY-=dimensions[currentDimension].gravity;
+  camera.position.y+=velY;
+  if(camera.position.y<2){
+    camera.position.y=2;
+    velY=0;
+    onGround=true;
+  }
+}
+
+// ===== MOVEMENT =====
+let move={f:0,s:0};
+
+function movement(){
+  camera.position.x+=move.s*0.1;
+  camera.position.z+=move.f*0.1;
+}
+
+// ===== DAY NIGHT =====
+function dayNight(){
+  time+=0.001;
+  let b=(Math.sin(time)+1)/2;
+  light.intensity=b;
+}
+
+// ===== SAVE =====
+function saveWorld(){
+  localStorage.setItem("worlds",JSON.stringify(worlds));
+}
+
+// ===== CONTROLS =====
+up.ontouchstart=()=>move.f=-1;
+up.ontouchend=()=>move.f=0;
+down.ontouchstart=()=>move.f=1;
+down.ontouchend=()=>move.f=0;
+left.ontouchstart=()=>move.s=-1;
+left.ontouchend=()=>move.s=0;
+right.ontouchstart=()=>move.s=1;
+right.ontouchend=()=>move.s=0;
+
+jump.onclick=()=>{ if(onGround){velY=0.2;onGround=false;} };
+place.onclick=()=>interact(true,0);
+break.onclick=()=>interact(false,0.3);
+
+// ===== LOOP =====
+let last=0;
+function loop(t){
+  let dt=(t-last)/1000;
+  last=t;
+
+  movement();
+  physics();
+  loadChunks();
+  checkPortal();
+  updateMobs();
+  dayNight();
+
+  if(Math.random()<0.01) spawnMob();
+
+  renderer.render(scene,camera);
+  requestAnimationFrame(loop);
+}
+
+// ===== START =====
+createPortal(2,2,2,"nether");
+createPortal(4,2,2,"end");
+createPortal(6,2,2,"moon");
+
+loop();
+</script>
+
+</body>
+</html>
